@@ -1,9 +1,11 @@
 provider "aws" {
   region = var.region  # Replace with your desired AWS region
+  #shared_config_files      = ["files/config"]
+  #shared_credentials_files = ["files/credentials"]
+  #profile                  = "florence"
 }
 
-#data "aws_caller_identity" "current" {}
-data "aws_caller_identity" "new" {}
+data "aws_caller_identity" "current" {}
 
 # S3 Files Bucket
 resource "aws_s3_bucket" "bucket_files" {
@@ -34,62 +36,79 @@ resource "aws_s3_bucket_logging" "bucket_logging" {
   target_bucket = aws_s3_bucket.bucket_logs.id
   target_prefix = "log/"
 }
-#resource "aws_s3_bucket_policy" "bucket_policy" {
-#  bucket = aws_s3_bucket.bucket_files.id
-#
-#  policy = <<EOF
-#{
-#  "Version": "2012-10-17",
-#  "Statement": [
-#    {
-#      "Effect": "Allow",
-#      "Principal": {
-#        "AWS": "arn:aws:iam::${data.aws_caller_identity.new.account_id}:root"
-#      },
-#      "Action": "s3:GetBucketAcl",
-#      "Resource": "arn:aws:s3:::${aws_s3_bucket.bucket_files.id}"
-#    },
-#    {
-#      "Effect": "Allow",
-#      "Principal": {
-#        "AWS": [
-#          ${join(",", [for user in aws_iam_user.bucket_dashboard_users : "arn:aws:iam::${data.aws_caller_identity.new.account_id}:user/${user.name}"])}
-#        ]
-#      },
-#      "Action": "s3:ListBucket",
-#      "Resource": "arn:aws:s3:::${aws_s3_bucket.bucket_files.id}"
-#    },
-#    {
-#      "Effect": "Allow",
-#      "Principal": {
-#        "AWS": [
-#          ${join(",", [for user in aws_iam_user.bucket_dashboard_users : "arn:aws:iam::${data.aws_caller_identity.new.account_id}:user/${user.name}"])}
-#        ]
-#      },
-#      "Action": [
-#        "s3:GetObject",
-#        "s3:PutObject",
-#        "s3:DeleteObject"
-#      ],
-#      "Resource": "arn:aws:s3:::${aws_s3_bucket.bucket_files.id}/*"
-#    }
-#  ]
-#}
-#EOF
-#}
+
+resource "aws_s3_bucket_policy" "bucket_policy" {
+  bucket = aws_s3_bucket.bucket_files.id
+
+  policy = jsonencode({
+    Version: "2012-10-17",
+    Statement: [
+      {
+        Effect: "Allow",
+        Principal: {
+          AWS: "arn:aws:iam::${data.aws_caller_identity.current.account_id}:root"
+        },
+        Action: "s3:GetBucketAcl",
+        Resource: "arn:aws:s3:::${aws_s3_bucket.bucket_files.id}"
+      },
+      {
+        Effect: "Allow",
+        Principal: {
+          AWS: [
+            for user in aws_iam_user.bucket_dashboard_users : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${user.name}"
+          ]
+        },
+        Action: "s3:ListBucket",
+        Resource: "arn:aws:s3:::${aws_s3_bucket.bucket_files.id}"
+      },
+      {
+        Effect: "Allow",
+        Principal: {
+          AWS: [
+            for user in aws_iam_user.bucket_dashboard_users : "arn:aws:iam::${data.aws_caller_identity.current.account_id}:user/${user.name}"
+          ]
+        },
+        Action: [
+          "s3:GetObject",
+          "s3:PutObject",
+          "s3:DeleteObject"
+        ],
+        Resource: "arn:aws:s3:::${aws_s3_bucket.bucket_files.id}/*"
+      }
+    ]
+  })
+}
 
 resource "aws_sns_topic" "notification_topic" {
   name      = "S3BucketFileNotificationTopic"
  # policy    = data.aws_iam_policy_document.sns-topic-policy.json
 }
 
-resource "aws_sns_topic_subscription" "email_subscription" {
-  topic_arn = aws_sns_topic.notification_topic.arn
-  protocol  = "email"
-  endpoint  = "renniebebu@gmail.com"
-  #delivery_policy = aws_iam_policy.example_policy.policy
-
+locals {
+  subscriptions = {
+    for user in var.users : user.email => {
+      topic_arn = aws_sns_topic.notification_topic.arn
+      protocol  = "email"
+      endpoint  = user.email
+    }
+  }
 }
+
+resource "aws_sns_topic_subscription" "email_subscription" {
+  for_each = local.subscriptions
+
+  topic_arn = each.value.topic_arn
+  protocol  = each.value.protocol
+  endpoint  = each.value.endpoint
+}
+#resource "aws_sns_topic_subscription" "email_subscription" {
+#  for_each  = toset([for user in var.users : user.email])
+#  topic_arn = aws_sns_topic.notification_topic.arn
+#  protocol  = "email"
+#  endpoint  = each.key
+#  #endpoint  = "renniebebu@gmail.com"
+#
+#}
 
 resource "aws_s3_bucket_notification" "bucket_notification" {
   bucket = aws_s3_bucket.bucket_files.id
@@ -101,40 +120,36 @@ resource "aws_s3_bucket_notification" "bucket_notification" {
   }
 }
 
+data "aws_iam_policy_document" "sns-topic-policy" {
+  policy_id = "__default_policy_ID"
 
-#data "aws_iam_policy_document" "sns-topic-policy" {
-#  policy_id = "__default_policy_ID"
-#
-#  statement {
-#    actions = [
-#      "SNS:GetTopicAttributes",
-#      "SNS:SetTopicAttributes",
-#      "SNS:AddPermission",
-#      "SNS:RemovePermission",
-#      "SNS:DeleteTopic",
-#      "SNS:Subscribe",
-#      "SNS:ListSubscriptionsByTopic",
-#      "SNS:Publish"
-#    ]
-#
-#    condition {
-#    }
-#
-#    effect = "Allow"
-#
-#    principals {
-#      type        = "AWS"
-#      identifiers = ["*"]
-#    }
-#
-#    resources = [
-#      "${aws_sns_topic.notification_topic.arn}",
-#    ]
-#
-#    sid = "__default_statement_ID"
-#  }
-#
-#}
+  statement {
+    actions = [
+      "SNS:GetTopicAttributes",
+      "SNS:SetTopicAttributes",
+      "SNS:AddPermission",
+      "SNS:RemovePermission",
+      "SNS:DeleteTopic",
+      "SNS:Subscribe",
+      "SNS:ListSubscriptionsByTopic",
+      "SNS:Publish"
+    ]
+
+    effect = "Allow"
+
+    principals {
+      type        = "AWS"
+      identifiers = ["*"]
+    }
+
+    resources = [
+      "${aws_sns_topic.notification_topic.arn}",
+    ]
+
+    sid = "__default_statement_ID"
+  }
+
+}
 
 #resource "aws_iam_policy" "example_policy" {
 #  name        = "example-policy"

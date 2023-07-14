@@ -40,21 +40,22 @@ variable "users" {
   }))
   default = [
     {
-      full_name = "Telmo Sampaio"
-      email     = "Telmo.sampaio"
+      full_name = "Telmo-Sampaio"
+      email     = "Telmo.sampaio@generatehealth.com"
     },
     {
-      full_name = "Kashif Ahmed"
-      email     = "kashif.ahmed"
+      full_name = "Kashif-Ahmed"
+      email     = "kashif.ahmed@generatehealth.com"
     },
     {
-      full_name = "Vicente Manzano"
-      email     = "vicente.manzano"
+      full_name = "Vicente-Manzano"
+      email     = "vicente.manzano@generatehealth.com"
     },
     {
-      full_name = "rennie tanti"
+      full_name = "rennie-tanti"
       email     = "tanti.rennie@gmail.com"
-    },
+      username  = "rentan"
+    }
   ]
 }
 

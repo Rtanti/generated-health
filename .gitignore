@@ -1,0 +1,6 @@
+.terraform*
+gh-key*
+terraform.tfstate*
+notes
+config
+credentials
