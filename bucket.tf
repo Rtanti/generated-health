@@ -1,15 +1,23 @@
 provider "aws" {
-  region = var.region  # Replace with your desired AWS region
-  #shared_config_files      = ["files/config"]
-  #shared_credentials_files = ["files/credentials"]
-  #profile                  = "florence"
+  region = var.region # Replace with your desired AWS region
 }
 
 data "aws_caller_identity" "current" {}
 
+# This is needed for the S3 Bucket access policy to come into effect, without it
+# the process may fail as it won't be able to create the s3 buckets
+resource "time_sleep" "wait_5_seconds" {
+  create_duration = "20s"
+  depends_on = [ aws_iam_group_policy_attachment.devops_s3_access_attachment ]
+}
+
 # S3 Files Bucket
 resource "aws_s3_bucket" "bucket_files" {
-  bucket = var.gh_bucket_name
+  bucket     = var.gh_bucket_name
+  depends_on = [
+    aws_iam_group_policy_attachment.devops_s3_access_attachment,
+    time_sleep.wait_5_seconds
+    ]
 }
 
 resource "aws_s3_bucket_ownership_controls" "bucket_files_ownership_controls" {
@@ -18,7 +26,6 @@ resource "aws_s3_bucket_ownership_controls" "bucket_files_ownership_controls" {
     object_ownership = "BucketOwnerPreferred"
   }
 }
-
 resource "aws_s3_bucket_acl" "gh_bucket_acl" {
   depends_on = [aws_s3_bucket_ownership_controls.bucket_files_ownership_controls]
 
@@ -28,6 +35,23 @@ resource "aws_s3_bucket_acl" "gh_bucket_acl" {
 ## S3 Logs Bucket
 resource "aws_s3_bucket" "bucket_logs" {
   bucket = var.gh_bucket_log
+  depends_on = [
+    aws_iam_group_policy_attachment.devops_s3_access_attachment,
+    time_sleep.wait_5_seconds
+  ]
+}
+
+resource "aws_s3_bucket_ownership_controls" "bucket_logs_ownership_controls" {
+  bucket = aws_s3_bucket.bucket_logs.id
+  rule {
+    object_ownership = "BucketOwnerPreferred"
+  }
+}
+
+resource "aws_s3_bucket_acl" "bucket_logs_acl" {
+  bucket = aws_s3_bucket.bucket_logs.id
+  acl    = "log-delivery-write"
+  depends_on = [ aws_s3_bucket_ownership_controls.bucket_logs_ownership_controls ]
 }
 
 resource "aws_s3_bucket_logging" "bucket_logging" {
@@ -79,10 +103,7 @@ resource "aws_s3_bucket_policy" "bucket_policy" {
   })
 }
 
-resource "aws_sns_topic" "notification_topic" {
-  name      = "S3BucketFileNotificationTopic"
- # policy    = data.aws_iam_policy_document.sns-topic-policy.json
-}
+
 
 locals {
   subscriptions = {
@@ -94,94 +115,50 @@ locals {
   }
 }
 
-resource "aws_sns_topic_subscription" "email_subscription" {
-  for_each = local.subscriptions
-
-  topic_arn = each.value.topic_arn
-  protocol  = each.value.protocol
-  endpoint  = each.value.endpoint
+resource "aws_sns_topic" "notification_topic" {
+  name = "S3BucketFileNotificationTopic"
 }
-#resource "aws_sns_topic_subscription" "email_subscription" {
-#  for_each  = toset([for user in var.users : user.email])
-#  topic_arn = aws_sns_topic.notification_topic.arn
-#  protocol  = "email"
-#  endpoint  = each.key
-#  #endpoint  = "renniebebu@gmail.com"
-#
-#}
+
+resource "aws_sns_topic_policy" "MySNSTopicPolicy" {
+  arn    = aws_sns_topic.notification_topic.arn
+  policy = <<POLICY
+{
+  "Version": "2012-10-17",
+  "Statement": [
+    {
+      "Effect": "Allow",
+      "Principal": {
+        "Service": "s3.amazonaws.com"
+      },
+      "Action": "sns:Publish",
+      "Resource": "${aws_sns_topic.notification_topic.arn}",
+      "Condition": {
+        "ArnEquals": {
+          "aws:SourceArn": "${aws_s3_bucket.bucket_files.arn}"
+        }
+      }
+    }
+  ]
+}
+POLICY
+}
+
+resource "aws_sns_topic_subscription" "email_subscription" {
+  for_each  = toset([for user in var.users : user.email])
+  topic_arn = aws_sns_topic.notification_topic.arn
+  protocol  = "email"
+  endpoint  = each.key
+}
 
 resource "aws_s3_bucket_notification" "bucket_notification" {
-  bucket = aws_s3_bucket.bucket_files.id
-  depends_on = [ aws_sns_topic_subscription.email_subscription ]
+  bucket     = aws_s3_bucket.bucket_files.id
+  depends_on = [aws_sns_topic_subscription.email_subscription]
 
   topic {
     topic_arn = aws_sns_topic.notification_topic.arn
     events    = ["s3:ObjectCreated:*"]
   }
 }
-
-data "aws_iam_policy_document" "sns-topic-policy" {
-  policy_id = "__default_policy_ID"
-
-  statement {
-    actions = [
-      "SNS:GetTopicAttributes",
-      "SNS:SetTopicAttributes",
-      "SNS:AddPermission",
-      "SNS:RemovePermission",
-      "SNS:DeleteTopic",
-      "SNS:Subscribe",
-      "SNS:ListSubscriptionsByTopic",
-      "SNS:Publish"
-    ]
-
-    effect = "Allow"
-
-    principals {
-      type        = "AWS"
-      identifiers = ["*"]
-    }
-
-    resources = [
-      "${aws_sns_topic.notification_topic.arn}",
-    ]
-
-    sid = "__default_statement_ID"
-  }
-
-}
-
-#resource "aws_iam_policy" "example_policy" {
-#  name        = "example-policy"
-#  description = "Example IAM policy for SNS subscription access"
-#
-#  policy = <<EOF
-#{
-#  "Version": "2008-10-17",
-#  "Id": "__default_policy_ID",
-#  "Statement": [
-#    {
-#      "Sid": "__default_statement_ID",
-#      "Effect": "Allow",
-#      "Principal": {
-#        "AWS": "*"
-#      },
-#      "Action": [
-#        "SNS:GetTopicAttributes",
-#        "SNS:SetTopicAttributes",
-#        "SNS:AddPermission",
-#        "SNS:RemovePermission",
-#        "SNS:DeleteTopic",
-#        "SNS:Subscribe",
-#        "SNS:ListSubscriptionsByTopic",
-#        "SNS:Publish"
-#      ],
-#      "Resource": "${aws_sns_topic.notification_topic.arn}"
-#      "Condition": {}
-#  ]
-#}
-#EOF
-#}
 
 resource "aws_cloudwatch_dashboard" "s3_dashboard" {
   dashboard_name = "S3BucketDashboard"
@@ -198,7 +175,7 @@ resource "aws_cloudwatch_dashboard" "s3_dashboard" {
         "view": "timeSeries",
         "stacked": false,
         "metrics": [
-          [ "AWS/S3", "NumberOfObjects", "BucketName", "${ var.gh_bucket_name }", "StorageType", "AllStorageTypes" ]
+          [ "AWS/S3", "NumberOfObjects", "BucketName", "${var.gh_bucket_name}", "StorageType", "AllStorageTypes" ]
         ],
         "region": "${var.region}",
         "title": "Object Count"
@@ -214,7 +191,7 @@ resource "aws_cloudwatch_dashboard" "s3_dashboard" {
         "view": "timeSeries",
         "stacked": false,
         "metrics": [
-          [ "AWS/S3", "DataSizeBytes", "BucketName", "${ var.gh_bucket_name }", "StorageType", "AllStorageTypes", { "stat": "Sum", "label": "Data Size" } ],
+          [ "AWS/S3", "DataSizeBytes", "BucketName", "${var.gh_bucket_name}", "StorageType", "AllStorageTypes", { "stat": "Sum", "label": "Data Size" } ],
           [ ".", "NumberOfObjects", ".", ".", ".", ".", { "stat": "SampleCount", "label": "Number of Objects" } ],
           [ ".", "DataSizeBytes", ".", ".", ".", ".", { "stat": "SampleCount", "label": "Number of Objects" } ]
         ],
@@ -258,4 +235,8 @@ resource "aws_iam_policy" "dashboard_policy" {
   ]
 }
 EOF
+}
+
+output "Bucket_files_name" {
+  value = "${aws_s3_bucket.bucket_files.bucket}"
 }
